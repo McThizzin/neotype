@@ -37,12 +37,15 @@ that applies at 10 in a row.
 src/
   util.*      rng, math, clock, utf-8          no dependencies
   palette.*   colour language                  no dependencies
+  audio.*     procedural sfx and mixer         no dependencies (miniaudio, device only)
   term.*      output buffer, raw mode, signals  POSIX
   canvas.*    cell grid + diff renderer        term, util
   game.*      simulation and rules             util, palette
   draw.*      paints game state to the canvas  canvas, game, palette
   input.*     stdin to key events              term, game
   main.c      wiring and the fixed-step loop
+vendor/
+  miniaudio.h  pinned single-header audio backend, unmodified
 ```
 
 Dependencies point one way only. `game` includes neither `canvas.h` nor
@@ -52,13 +55,32 @@ boundary is what the test harness and the layering check both lean on.
 Rendering is a diff against the previous frame, so a frame that changes
 nothing emits no bytes.
 
+## Sound
+
+Five effects — hit, miss, kill, level up, game over — are synthesised from
+oscillator sweeps and filtered noise at startup, so there are no sample files
+and the game stays a single binary. Tweak the recipes at the top of
+`src/audio.c`.
+
+`audio` knows nothing about the game: `main` reads the simulation's counters
+and turns the per-frame deltas into sounds, which keeps the dependency
+one-way and means the rules never learn sound exists. Requests cross to the
+audio thread through a lock-free ring, so the game never blocks on a full
+queue — sounds are dropped rather than queued.
+
+There is no mute key yet. `audio_set_muted()` / `audio_is_muted()` exist in
+`src/audio.h` but nothing is bound to them; every letter is already a fire key
+during play, so a binding needs a non-letter key. If no output device is
+available (SSH, container, no sound card) the game prints a note and plays
+silently.
+
 ## Tests
 
 ```
 make test
 ```
 
-Two checks:
+Three checks:
 
 **Deterministic regression.** The binary can simulate itself with no tty and no
 wall clock:
@@ -78,6 +100,17 @@ If that was deliberate, review the diff and re-record with `make test UPDATE=1`.
 
 **Layering check.** `tests/check-layers.sh` fails if a module includes one from
 a higher layer, which keeps the dependency direction from eroding.
+
+**Audio checks.** `tests/audio_test.c` drives the same device-free mixer the
+game links against, so it needs no sound card and runs over SSH or in a
+container. It asserts that every effect is audible and leaves headroom, that the
+mixer is silent when idle, that a 500-request flood (ring overflow plus voice
+stealing) stays clean and within full scale, and that muting suppresses
+everything. To also write one `.wav` per effect so you can listen to them:
+
+```
+make test-audio OUT=/tmp/snd
+```
 
 ## Environment variables
 

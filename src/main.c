@@ -21,6 +21,7 @@
  *   term    output buffer, raw mode, signals  (POSIX)
  *   canvas  cell grid + diff renderer        (term, util)
  *   palette colour language                  (no dependencies)
+ *   audio   procedural sfx and the mixer      (no dependencies, device only)
  *   game    simulation and rules             (util, palette)
  *   draw    paints game state to the canvas  (canvas, game, palette)
  *   input   stdin -> key events              (term, game)
@@ -28,6 +29,7 @@
  */
 #define _POSIX_C_SOURCE 200809L
 
+#include "audio.h"
 #include "canvas.h"
 #include "draw.h"
 #include "game.h"
@@ -36,6 +38,7 @@
 #include "util.h"
 
 #include <poll.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,6 +118,54 @@ static void headless_run(void) {
     }
 }
 
+/* ---------- sound ----------
+ * audio knows nothing about the game, so main reads the sim's counters and
+ * turns the per-frame deltas into sounds. That keeps the dependency one-way
+ * and means the rules never learn sound exists.
+ *
+ * A kill is also a hit (game_shoot bumps both counters), so hits are split
+ * into kills and the remainder. Starting a run or retrying after a crash
+ * zeroes the counters, so any state change resyncs silently -- except the
+ * move into S_OVER, which is the crash itself.
+ */
+static struct { int shots, hits, kills, level, state; } snd_last;
+static bool snd_ready;                 /* is snd_last a real state yet? */
+static bool sound_on;                  /* no output device means play nothing */
+
+static void snd_resync(const Game *g) {
+    snd_last.shots = g->shots; snd_last.hits = g->hits;
+    snd_last.kills = g->kills; snd_last.level = g->level;
+    snd_last.state = g->state;
+}
+
+static void audio_sync(const Game *g) {
+    if (!sound_on) return;
+
+    /* A zeroed snd_last is not a game state -- level starts at 1, not 0 -- so
+     * adopt the opening state silently instead of reading the gap as a jump. */
+    if (!snd_ready) { snd_resync(g); snd_ready = true; return; }
+
+    if (g->state != snd_last.state) {
+        snd_resync(g);
+        if (g->state == S_OVER) audio_play(SFX_GAMEOVER, 1.0f, 0.6f);
+        return;
+    }
+
+    int kills = g->kills - snd_last.kills;
+    int hits  = g->hits  - snd_last.hits  - kills;
+    int miss  = g->shots - snd_last.shots - hits - kills;
+    snd_last.shots = g->shots; snd_last.hits = g->hits; snd_last.kills = g->kills;
+
+    /* One keypress arrives per frame in practice, but a paste can deliver
+     * several at once; cap so a burst cannot flood the request ring. */
+    for (int i = 0; i < kills && i < 4; i++) audio_play(SFX_KILL, 1.0f, 0.8f);
+    for (int i = 0; i < hits  && i < 4; i++) audio_play(SFX_HIT,  1.0f, 0.6f);
+    for (int i = 0; i < miss  && i < 4; i++) audio_play(SFX_MISS, 1.0f, 0.5f);
+
+    if (g->level > snd_last.level) audio_play(SFX_LEVELUP, 1.0f, 0.7f);
+    snd_last.level = g->level;
+}
+
 /* ---------- main ---------- */
 int main(void) {
     if (getenv("NEOTYPE_HEADLESS")) { headless_run(); return 0; }
@@ -122,6 +173,11 @@ int main(void) {
 
     rs = env_seed();
     for (int i = 0; i < 8; i++) rnd32();
+
+    /* Before term_init(): the audio stack probes the sound card and talks to
+     * stderr, which is still an ordinary terminal at this point. */
+    sound_on = audio_init();
+    if (!sound_on) fputs("neotype: no audio output device, playing silently\n", stderr);
 
     term_init();
 
@@ -156,9 +212,11 @@ int main(void) {
             const Game *g = game();
             if (g->state == S_PLAY) game_update((float)dt);
             else if (g->state == S_OVER) game_advance_over((float)dt);
+            audio_sync(g);
         }
         draw_frame();
         present();
     }
+    audio_shutdown();
     return 0;
 }

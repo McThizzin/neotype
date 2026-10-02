@@ -29,7 +29,7 @@ echo "$LAYERS" | while IFS=: read -r mod allowed; do
     for dep in $(echo "$got" | tr ',' ' '); do
         case ",$allowed," in
             *",$dep,"*) ;;
-            *) echo "  VIOLATION: $mod.c includes $dep.h (allowed: ${allowed:-none})" >&2 ;;
+            *) echo "  VIOLATION: $mod.c includes $dep.h (allowed: ${allowed:-none})" ;;
         esac
     done
 done | tee /tmp/.nt_layers

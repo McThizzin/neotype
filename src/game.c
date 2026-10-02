@@ -5,7 +5,7 @@
 #include <math.h>
 #include <string.h>
 
-static Game g = { .level = 1, .state = S_TITLE };
+static Game g = { .level = 1, .state = S_MENU, .sound = 1, .caps = 1 };
 
 /* The play field size. Owned by game rather than read from the canvas, so the
  * sim has no dependency on the renderer; main keeps the two in sync. */
@@ -25,6 +25,8 @@ int  game_fx_live(void)     { int n = 0; for (int i = 0; i < MAXFX; i++) n += g.
 int  game_over_t_reached(float secs) { return g.state == S_OVER && g.over_t >= secs; }
 
 void game_reset(void) {
+    /* Per-run state only. g.sound and g.caps are settings and survive, so
+     * they are deliberately absent here. */
     memset(g.drops, 0, sizeof g.drops);
     memset(g.beams, 0, sizeof g.beams);
     memset(g.fxs, 0, sizeof g.fxs);
@@ -51,7 +53,11 @@ static void spawn(void) {
 
     Drop *d = &g.drops[slot];
     d->alive = 1; d->x = x; d->y = 1; d->flash = 0;
-    d->ch = (rndf() < 0.35f) ? (char)('A' + rnd32() % 26) : (char)('a' + rnd32() % 26);
+    /* caps off means the rain is all lowercase. rndf() is called either way,
+     * so the option cannot shift the RNG draw order (and the golden digests). */
+    float case_roll = rndf();
+    d->ch = (g.caps && case_roll < 0.35f) ? (char)('A' + rnd32() % 26)
+                                           : (char)('a' + rnd32() % 26);
 
     int p3 = imin(30, (g.level - 1) * 4);
     int p2 = imin(40, 8 + (g.level - 1) * 5);
@@ -161,14 +167,15 @@ void game_on_key(int c) {
     if (c == 3) { g.quit_requested = 1; return; }
     int enter = (c == '\r' || c == '\n' || c == ' ');
     switch (g.state) {
-    case S_TITLE:
-        if (enter) { game_reset(); g.state = S_PLAY; }
-        else if (c == 'q' || c == 'Q') g.quit_requested = 1;
+    case S_MENU:
+        if (enter || c == '1')     { game_reset(); g.state = S_PLAY; }
+        else if (c == '2')          g.sound = !g.sound;
+        else if (c == '3')          g.caps = !g.caps;
         break;
     case S_OVER:
         if (g.over_t < 0.8f) break;               /* ignore keys mashed during the crash */
-        if (enter) { game_reset(); g.state = S_PLAY; }
-        else if (c == 'q' || c == 'Q') g.quit_requested = 1;
+        if (enter || c == '1')     { game_reset(); g.state = S_PLAY; }
+        else if (c == '2')          g.state = S_MENU;
         break;
     case S_PAUSE:
         if (c == '\t' || enter) g.state = S_PLAY;

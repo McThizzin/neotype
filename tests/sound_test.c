@@ -10,7 +10,9 @@
  *   - a kill is also a hit, so hit + kill == hits, with no phantom sounds
  *   - one game over per crash, and one level up per level change
  *   - retrying after a crash is silent
- *   - sound_set_enabled(false) is inert
+ *   - the menu's sound setting, both ways: muting is inert and tells the
+ *     mixer, and unmuting resumes on a silent baseline rather than dumping
+ *     the muted stretch's events at once
  */
 #include "sound.h"
 
@@ -30,7 +32,10 @@
 static int fired[SFX_COUNT];
 static int total, bad_id, bad_pitch, bad_gain;
 static int fake_device;                  /* what audio_init() should report */
+static int muted;                        /* what sound last asked the mixer for */
 
+/* The menu setting decides whether sound is wanted; sound mirrors it onto
+     * the mixer. Nothing links audio.o, so provide that seam too. */
 void audio_play(Sfx id, float pitch, float gain) {
     if ((unsigned)id >= SFX_COUNT) { bad_id++; return; }
     fired[id]++;
@@ -39,6 +44,7 @@ void audio_play(Sfx id, float pitch, float gain) {
     if (!(gain >= 0.0f && gain <= 1.0f))   bad_gain++;
 }
 
+void audio_set_muted(bool m) { muted = m; }
 bool audio_init(void)     { return fake_device; }
 void audio_shutdown(void) {}
 
@@ -69,18 +75,18 @@ static void run(unsigned seed, int w, int h, unsigned frames, const char *label)
     rs = seed;
     for (int i = 0; i < 8; i++) rnd32();
     game_set_viewport(w, h);
-    game_set_state(S_TITLE);
+    game_set_state(S_MENU);
     game_reset();
 
     /* sound_open() normally opens a device; the mapping is what is under
      * test, so drive it directly instead. */
     fake_device = 1;
-    sound_set_enabled(sound_open());
-    if (!sound_enabled()) { printf("  FAIL: sound_open did not enable a present device\n"); fails++; }
+    if (!sound_open()) { printf("  FAIL: sound_open did not open a present device\n"); fails++; }
+    game()->sound = 1;
 
-    int title_sounds = 0, retry_sounds = 0;
+    int menu_sounds = 0, retry_sounds = 0;
     int p_shots = game()->shots, p_hits = game()->hits, p_kills = game()->kills;
-    int p_level = game()->level, p_state = S_TITLE;
+    int p_level = game()->level, p_state = S_MENU;
 
     for (unsigned f = 0; f < frames; f++) {
         int base = total;
@@ -108,7 +114,7 @@ static void run(unsigned seed, int w, int h, unsigned frames, const char *label)
         if (g->level > p_level && g->state == p_state) level_jumps++;
         if (g->state == S_OVER && p_state != S_OVER) crashes++;
         if (p_state == S_OVER && g->state == S_PLAY && total > base) retry_sounds++;
-        if (g->state == S_TITLE && total > base) title_sounds++;
+        if (g->state == S_MENU && total > base) menu_sounds++;
 
         p_shots = g->shots; p_hits = g->hits; p_kills = g->kills;
         p_level = g->level; p_state = g->state;
@@ -133,8 +139,8 @@ static void run(unsigned seed, int w, int h, unsigned frames, const char *label)
     check(fired[SFX_GAMEOVER] == crashes, "one game over per crash", d);
     snprintf(d, sizeof d, "%d fired vs %d level changes", fired[SFX_LEVELUP], level_jumps);
     check(fired[SFX_LEVELUP] == level_jumps, "one level up per level change", d);
-    snprintf(d, sizeof d, "%d sounds on the title screen", title_sounds);
-    check(title_sounds == 0, "silent before the run starts", d);
+    snprintf(d, sizeof d, "%d sounds on the main menu", menu_sounds);
+    check(menu_sounds == 0, "silent on the main menu", d);
     snprintf(d, sizeof d, "%d sounds while retrying", retry_sounds);
     check(retry_sounds == 0, "retry is silent", d);
     check(bad_id == 0, "no out-of-range Sfx", "");
@@ -182,12 +188,12 @@ int main(void) {
 
     burst_test();
 
-    /* No output device (SSH, container): sound_open must report the failure
-     * and leave the mapping inert, so the game runs on silently. A real shot
-     * is delivered first, otherwise this would pass vacuously. */
+    /* No output device (SSH, container): sound_open reports the failure and the
+     * mapping stays inert. A real shot is delivered, otherwise this would
+     * pass vacuously. */
     fake_device = 0;
     check(!sound_open(), "no device: sound_open reports false", "");
-    check(!sound_enabled(), "no device: mapping is inert", "sound stayed enabled");
+    game()->sound = 1;                         /* the player still wants sound */
     sound_sync(game());                       /* sound_open cleared the ready flag */
     game_shoot('a');
     reset_recording();
@@ -195,15 +201,34 @@ int main(void) {
     check(total == 0, "no device: nothing fires", "sound_sync fired anyway");
     sound_close();
 
-    /* Explicitly disabled, with the device present: still inert. */
+    /* Muted via the menu, with a device present: inert, and the mixer is
+     * told, so a voice already in flight is cut too. */
     fake_device = 1;
     sound_open();
-    sound_set_enabled(false);
+    game()->sound = 0;
+    muted = -1;
     sound_sync(game());
+    check(muted == 1, "muted: mixer is told", "audio_set_muted not called with true");
     game_shoot('a');
     reset_recording();
     sound_sync(game());
-    check(total == 0 && !sound_enabled(), "disabled is inert", "sound_sync fired anyway");
+    check(total == 0, "muted: nothing fires", "sound_sync fired anyway");
+
+    /* Unmuting must not dump the muted interval's deltas all at once, so the
+     * first sync after unmuting is a silent baseline. */
+    game()->sound = 1;
+    muted = -1;
+    sound_sync(game());
+    check(muted == 0, "unmuted: mixer is told", "audio_set_muted not called with false");
+    reset_recording();
+    sound_sync(game());
+    check(total == 0, "unmuting is a silent baseline", "deltas dumped on unmute");
+
+    /* ...but the next real event does sound. */
+    game_shoot('a');
+    reset_recording();
+    sound_sync(game());
+    check(total == 1, "sound resumes after unmuting", "still silent");
 
     if (fails) { printf("sound: FAILED (%d)\n", fails); return 1; }
     printf("sound: ok\n");

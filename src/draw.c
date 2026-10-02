@@ -135,22 +135,38 @@ static void draw_fx(const Game *g, int H) {
     }
 }
 
-static void overlay_title(void) {
-    int W = canvas_w(), H = canvas_h();
+/* One menu line: a number key, a label, and a value. The key is what you
+ * press, so it carries the accent; the value stays quiet. */
+static void menu_item(int y, const char *key, const char *label, const char *value) {
+    int x = (canvas_w() - 28) / 2;
+    str_at(x, y, key, C_ACCENT_R, C_ACCENT_G, C_ACCENT_B, 1, 0);
+    str_at(x + 3, y, label, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0, 0);
+    if (value && *value)
+        str_at(x + 22, y, value, C_DIM_R, C_DIM_G, C_DIM_B, 0, 0);
+}
+
+static void overlay_menu(void) {
+    const Game *g = game();
     char buf[160];
-    overlay_box(52, 12);
-    int y0 = (H - 12) / 2;
-    center(y0 + 2, "N E O T Y P E", C_ACCENT_R, C_ACCENT_G, C_ACCENT_B, 1);
-    center(y0 + 4, "type the falling letters before they", C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
-    center(y0 + 5, "touch your prompt.  case matters: a != A", C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
-    int r, g, b, x = (W - 33) / 2;
+    overlay_box(52, 16);
+    int y0 = (canvas_h() - 16) / 2;
+
+    center(y0 + 1, "N E O T Y P E", C_ACCENT_R, C_ACCENT_G, C_ACCENT_B, 1);
+    center(y0 + 3, "type the falling letters before they", C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
+    center(y0 + 4, "touch your prompt.  case matters: a != A", C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
+
+    int r, gr, b, x = (canvas_w() - 33) / 2;
     for (int hp = 1; hp <= 3; hp++) {
-        hp_color(hp, &r, &g, &b);
-        put(x, y0 + 7, 0x25A0, r, g, b, 1, 0);
+        hp_color(hp, &r, &gr, &b);
+        put(x, y0 + 6, 0x25A0, r, gr, b, 1, 0);
         snprintf(buf, sizeof buf, " %d hit%s", hp, hp > 1 ? "s" : "");
-        x = str_at(x + 1, y0 + 7, buf, C_LABEL_R, C_LABEL_G, C_LABEL_B, 0, 0) + 3;
+        x = str_at(x + 1, y0 + 6, buf, C_LABEL_R, C_LABEL_G, C_LABEL_B, 0, 0) + 3;
     }
-    center(y0 + 9, "enter start    tab pause    esc quit", C_DIM_R, C_DIM_G, C_DIM_B, 0);
+
+    menu_item(y0 + 8,  "1", "start", NULL);
+    menu_item(y0 + 9,  "2", "sound", g->sound ? "on" : "off");
+    menu_item(y0 + 10, "3", "caps",  g->caps  ? "on" : "off");
+    center(y0 + 12, "esc quit", C_DIM_R, C_DIM_G, C_DIM_B, 0);
 }
 
 static void overlay_pause(void) {
@@ -161,15 +177,18 @@ static void overlay_pause(void) {
 static void overlay_over(const Game *g) {
     int H = canvas_h();
     char buf[160];
-    overlay_box(36, 11);
-    int y0 = (H - 11) / 2;
+    overlay_box(36, 13);
+    int y0 = (H - 13) / 2;
     int acc = g->shots ? g->hits * 100 / g->shots : 100;
-    center(y0 + 2, "G A M E   O V E R", C_BAD_R, C_BAD_G, C_BAD_B, 1);
-    snprintf(buf, sizeof buf, "score     %d", g->score);     center(y0 + 4, buf, C_BRIGHT_R, C_BRIGHT_G, C_BRIGHT_B, 1);
-    snprintf(buf, sizeof buf, "level     %d", g->level);     center(y0 + 5, buf, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
-    snprintf(buf, sizeof buf, "best run  %d", g->maxcombo);  center(y0 + 6, buf, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
-    snprintf(buf, sizeof buf, "accuracy  %d%%", acc);         center(y0 + 7, buf, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
-    center(y0 + 9, g->over_t < 0.8f ? "..." : "enter retry    q quit", C_DIM_R, C_DIM_G, C_DIM_B, 0);
+    center(y0 + 1, "G A M E   O V E R", C_BAD_R, C_BAD_G, C_BAD_B, 1);
+    snprintf(buf, sizeof buf, "score     %d", g->score);     center(y0 + 3, buf, C_BRIGHT_R, C_BRIGHT_G, C_BRIGHT_B, 1);
+    snprintf(buf, sizeof buf, "level     %d", g->level);     center(y0 + 4, buf, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
+    snprintf(buf, sizeof buf, "best run  %d", g->maxcombo);  center(y0 + 5, buf, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
+    snprintf(buf, sizeof buf, "accuracy  %d%%", acc);         center(y0 + 6, buf, C_TEXT_R, C_TEXT_G, C_TEXT_B, 0);
+    if (g->over_t < 0.8f) { center(y0 + 9, "...", C_DIM_R, C_DIM_G, C_DIM_B, 0); return; }
+    menu_item(y0 + 9,  "1", "retry",      NULL);
+    menu_item(y0 + 10, "2", "main menu",  NULL);
+    center(y0 + 11, "esc quit", C_DIM_R, C_DIM_G, C_DIM_B, 0);
 }
 
 void draw_frame(void) {
@@ -186,7 +205,7 @@ void draw_frame(void) {
     draw_letters(g, H);
     draw_fx(g, H);
 
-    if      (g->state == S_TITLE) overlay_title();
+    if      (g->state == S_MENU)  overlay_menu();
     else if (g->state == S_PAUSE) overlay_pause();
     else if (g->state == S_OVER)  overlay_over(g);
 }

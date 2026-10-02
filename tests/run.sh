@@ -19,12 +19,15 @@ if [ ! -x "$BIN" ]; then
 fi
 
 # seed  w    h    frames  notes
-#   1   100  30   3600    reaches every state incl. game over + retry
+#   1   100  30   3600    reaches every state incl. game over
 #   3   100  30   3600    deep level progression, combo multiplier
 #   1337 100 30   3600    game over with zero hits (pure miss path)
 #   1   94   26   3600    smallest supported viewport
 #   2   200  50   2400    large viewport
-CASES="1:100:30:3600 3:100:30:3600 1337:100:30:3600 1:94:26:3600 2:200:50:2400"
+#   5   100  30   6600    two crashes, so both ways out of game over are
+#                         covered: back to the menu (and the lowercase rain
+#                         it switches on) then a plain retry
+CASES="1:100:30:3600 3:100:30:3600 1337:100:30:3600 1:94:26:3600 2:200:50:2400 5:100:30:6600"
 
 : > "$ACTUAL"
 echo "$CASES" | tr ' ' '\n' | while IFS=: read -r seed w h frames; do

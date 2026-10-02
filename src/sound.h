@@ -4,6 +4,10 @@
  * the one place that reads simulation state and asks for a sound. It owns no
  * timing and never touches the terminal, so it can be driven by a test.
  *
+ * Whether sound is wanted is a menu setting held by the game (Game.sound),
+ * which this mirrors onto the mixer; this module only tracks whether an
+ * output device actually opened.
+ *
  * Depends on game (reads the counters) and audio (asks for effects).
  */
 #pragma once
@@ -17,12 +21,6 @@
  * on silently. Call before the TUI takes over the terminal. */
 bool sound_open(void);
 void sound_close(void);
-
-/* Master switch. sound_open() sets this from the device result, so a machine
- * with no sound card stays quiet; while off, sound_sync() does nothing. This
- * is also where a mute key would flip it. */
-void sound_set_enabled(bool on);
-bool sound_enabled(void);
 
 /* Call once per frame, after the sim has stepped. Turns the counter deltas
  * into effects. Counters reset when a run starts or is retried, so a state

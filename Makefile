@@ -1,7 +1,7 @@
 # neotype - matrix-rain typing shooter for the terminal
 #
 #   make            build ./neotype
-#   make test       deterministic headless regression + layering + audio checks
+#   make test       headless regression + layering + audio + sound + game checks
 #   make test-audio audio checks only (pass OUT=dir to also write .wav files)
 #   make clean
 
@@ -27,8 +27,9 @@ DEP := $(OBJ:.o=.d)
 BIN   := neotype
 ATEST := tests/audio_test
 STEST := tests/sound_test
+GTEST := tests/game_test
 
-.PHONY: all test test-audio test-sound clean
+.PHONY: all test test-audio test-sound test-game clean
 all: $(BIN)
 
 $(BIN): $(OBJ)
@@ -47,11 +48,17 @@ $(ATEST): tests/audio_test.c src/audio.o src/util.o
 $(STEST): tests/sound_test.c src/sound.o src/game.o src/palette.o src/util.o
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-test: $(BIN) $(ATEST) $(STEST)
+# Same set as the sound test minus audio.o: palette is pure colour math with no
+# canvas dependency, so still no terminal and no audio.
+$(GTEST): tests/game_test.c src/game.o src/palette.o src/util.o
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+test: $(BIN) $(ATEST) $(STEST) $(GTEST)
 	@sh tests/run.sh
 	@sh tests/check-layers.sh
 	@$(ATEST)
 	@$(STEST)
+	@$(GTEST)
 
 test-audio: $(ATEST)
 	@if [ -n "$(OUT)" ]; then mkdir -p "$(OUT)"; fi
@@ -60,7 +67,10 @@ test-audio: $(ATEST)
 test-sound: $(STEST)
 	@$(STEST)
 
+test-game: $(GTEST)
+	@$(GTEST)
+
 clean:
-	rm -f $(BIN) $(OBJ) $(DEP) $(ATEST) $(STEST)
+	rm -f $(BIN) $(OBJ) $(DEP) $(ATEST) $(STEST) $(GTEST)
 
 -include $(DEP)

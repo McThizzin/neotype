@@ -13,7 +13,7 @@ typedef struct { float x, y, vx, vy, ttl; char ch; uint8_t r, g, b; } Fx;
 /* kind: 0 miss, 1 hit, 2 kill */
 typedef struct { uint8_t kind, r, g, b; float age; } Mark;
 
-enum { S_TITLE, S_PLAY, S_PAUSE, S_OVER };
+enum { S_MENU, S_PLAY, S_PAUSE, S_OVER };
 
 #define MAX_MARKS 512
 
@@ -31,6 +31,10 @@ typedef struct {
     int    score, kills, level, combo, maxcombo, shots, hits;
     float  spawn_t, miss_t, over_t;
     double elapsed;
+    /* Menu settings. Deliberately not touched by game_reset(): they are the
+     * player's, not the run's, so they outlive a retry and a trip to the
+     * menu. sound is mirrored onto the mixer by sound_sync(). */
+    int    sound, caps;   /* caps: uppercase letters appear in the rain */
 } Game;
 
 Game *game(void);          /* the single simulation */
@@ -45,7 +49,7 @@ void game_on_key(int c);   /* state machine: start / pause / retry / quit */
  * whenever the viewport changes. */
 void game_set_viewport(int w, int h);
 
-/* 'q' asks to quit; the game layer does not reach into term's signal flag. */
+/* Ctrl-C asks to quit; the game layer does not reach into term's signal flag. */
 int  game_quit_requested(void);
 void game_clear_quit(void);
 

@@ -6,18 +6,15 @@
  * kills and the remainder. */
 static struct { int shots, hits, kills, level, state; } last;
 static bool ready;                 /* is `last` a real game state yet? */
-static bool enabled;
+static bool device;                /* did a device open? */
 
 bool sound_open(void) {
-    enabled = audio_init();
+    device = audio_init();
     ready = false;                 /* counters are per-run; resync on first sync */
-    return enabled;
+    return device;
 }
 
 void sound_close(void) { audio_shutdown(); }
-
-void sound_set_enabled(bool on) { enabled = on; }
-bool sound_enabled(void)        { return enabled; }
 
 static void resync(const Game *g) {
     last.shots = g->shots; last.hits = g->hits;
@@ -26,10 +23,16 @@ static void resync(const Game *g) {
 }
 
 void sound_sync(const Game *g) {
-    if (!enabled) return;
+    /* The menu setting is the only source of truth. Mirroring it onto the
+     * mixer also cuts any voice already in flight, so toggling mute is
+     * immediate rather than after the longest effect finishes. */
+    audio_set_muted(!g->sound);
+    if (!device || !g->sound) return;
 
     /* A zeroed `last` is not a game state -- level starts at 1, not 0 -- so
-     * adopt the opening state silently instead of reading the gap as a jump. */
+     * adopt the opening state silently instead of reading the gap as a jump.
+     * Also reached after unmuting, so toggling back on does not dump the
+     * whole muted interval's worth of deltas at once. */
     if (!ready) { resync(g); ready = true; return; }
 
     if (g->state != last.state) {

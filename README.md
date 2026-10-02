@@ -20,16 +20,33 @@ Minimum viewport is 94x26.
 
 ## Keys
 
+On the main menu and on the game-over screen:
+
+| Key | Action |
+|---|---|
+| `1` | start / retry |
+| `2` | sound on/off (menu), main menu (game over) |
+| `3` | capital letters on/off (menu) |
+| Esc, Ctrl-C | quit |
+
+Enter is an alias for `1` everywhere. Esc and Ctrl-C quit from any screen.
+
+During play:
+
 | Key | Action |
 |---|---|
 | `a`–`z`, `A`–`Z` | fire at the lowest matching letter |
 | Tab | pause |
 | Enter | clear the prompt |
-| Esc, `q`, Ctrl-C | quit |
+| Backspace | delete from the prompt |
+| Esc, Ctrl-C | quit |
 
 Typing is case-sensitive: `a` does not hit `A`. Each shot leaves a mark on
 the prompt — `•` hit, `◆` kill, `×` miss — and builds a streak multiplier
 that applies at 10 in a row.
+
+Both settings live in the menu and survive a retry and a trip back to the menu.
+Turning capital letters off makes the rain entirely lowercase.
 
 ## Layout
 
@@ -69,10 +86,16 @@ effects. That keeps the dependency one-way and means the rules never learn
 sound exists. Requests cross to the audio thread through a lock-free ring, so
 the game never blocks on a full queue — sounds are dropped rather than queued.
 
-There is no mute key yet. `sound_set_enabled()` is the switch a mute key would
-flip; `audio_set_muted()` / `audio_is_muted()` are the level below it. If no
-output device is available (SSH, container, no sound card) `sound_open()`
-reports it, the game prints a note, and everything runs silently.
+Whether sound is wanted is a menu setting held by the game, not by `sound`, so
+`game` can toggle it without depending on the audio stack. `sound_sync()` mirrors
+that setting onto the mixer each frame via `audio_set_muted()`, which means
+muting also cuts any effect still playing rather than waiting for it to finish.
+Re-enabling is a silent baseline, so a muted stretch does not dump its worth of
+events all at once.
+
+If no output device is available (SSH, container, no sound card) `sound_open()`
+reports it, the game prints a note, the menu shows sound as off, and everything
+runs silently.
 
 ## Tests
 
@@ -80,7 +103,7 @@ reports it, the game prints a note, and everything runs silently.
 make test
 ```
 
-Four checks:
+Five checks:
 
 **Deterministic regression.** The binary can simulate itself with no tty and no
 wall clock:
@@ -91,9 +114,12 @@ NEOTYPE_HEADLESS=1 NEOTYPE_SEED=1 NEOTYPE_W=100 NEOTYPE_H=30 ./neotype
 
 It feeds a fixed key script into the sim and prints a digest every 60 frames —
 score, level, streak, live drops, RNG state, and a hash of the rendered grid.
-`tests/run.sh` runs five stimuli and diffs against `tests/golden.txt`. The set
-covers all four states, the retry transition, levels 1 through 7, and both the
-smallest and largest supported viewports.
+`tests/run.sh` runs six stimuli and diffs against `tests/golden.txt`. The set
+covers all four states, levels 1 through 7, both the smallest and largest
+supported viewports, and both ways out of a game over: retry, and back to the
+menu with capital letters switched off. The longer stimulus also digests the
+handful of frames where a single keypress changes the screen and the next one
+changes it again, so screens that are up for one frame are still on record.
 
 A digest mismatch means the sim, the RNG draw order, or the renderer changed.
 If that was deliberate, review the diff and re-record with `make test UPDATE=1`.
@@ -118,12 +144,21 @@ itself. Nothing links `audio.o`, so it needs neither a sound card nor
 miniaudio. It pins the counts — one kill sound per kill, one hit sound per
 non-kill hit, one miss sound per miss, one game over per crash, one level up
 per level change — plus the quiet cases that are easy to regress: nothing
-before the run starts, nothing while retrying, the per-frame cap at 4, and
-`audio_init` reporting no device leaving the mapping inert.
+before the run starts, nothing while retrying, the per-frame cap at 4,
+`audio_init` reporting no device leaving the mapping inert, and muting from the
+menu both silencing the effects and telling the mixer, so an effect already in
+flight is cut too.
 
 The first of those exists because it caught a real bug: the baseline was
 zero-initialised while the game starts at level 1, so every run played the
-level-up arpeggio on the title screen.
+level-up arpeggio on the main menu.
+
+**Menu and settings check.** `tests/game_test.c` links `game.o` alone, so the
+menu needs no canvas, terminal or audio. It pins the key contract (what `1`,
+`2` and `3` do on each screen, that `q` no longer quits anywhere but Ctrl-C
+still does, and that a crash swallows keys until its overlay settles), that both
+settings survive a retry and a trip back to the menu, and that switching
+capital letters off really does keep the rain lowercase.
 
 ## Environment variables
 

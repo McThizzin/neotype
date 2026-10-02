@@ -1,7 +1,7 @@
 /*
  * neotype.c - matrix-rain typing shooter for the terminal
  *
- * Build:   cc -O2 -o neotype neotype.c -lm
+ * Build:   make
  * Run:     ./neotype
  *
  * Letters rain down. Type a letter (case-sensitive!) to fire at the lowest
@@ -16,42 +16,24 @@
  * Needs a truecolor terminal (Ghostty, kitty, WezTerm, iTerm2, ...).
  */
 #define _POSIX_C_SOURCE 200809L
-#include <errno.h>
+
+#include "canvas.h"
+#include "term.h"
+#include "util.h"
+
 #include <math.h>
 #include <poll.h>
-#include <signal.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
-#define FRAME 0.016
-#define MAXD 512
-#define MAXB 16
-#define MAXFX 256
-#define MIN_W 94
-#define MIN_H 26
-
-typedef struct { uint32_t ch; uint8_t r, g, b, bold, inv; } Cell;
+/* ---------- TODO(step 4/5): game + draw are still inline below ---------- */
 typedef struct { int x; float y, speed, flash; char ch; int hp, maxhp, alive; } Drop;
 typedef struct { int x0, y0, x1, y1; float ttl; } Beam;
 typedef struct { float x, y, vx, vy, ttl; char ch; uint8_t r, g, b; } Fx;
 enum { S_TITLE, S_PLAY, S_PAUSE, S_OVER };
-
-/* ---------- globals ---------- */
-static struct termios orig;
-static int raw_on;
-static volatile sig_atomic_t quit_flag;
-
-static int W, H, need_clear = 1;
-static Cell *cur, *prev;
-
-static char *ob;
-static size_t obn, obc;
 
 static Drop drops[MAXD];
 static Beam beams[MAXB];
@@ -65,148 +47,6 @@ static double elapsed;
 typedef struct { uint8_t kind, r, g, b; float age; } Mark;   /* kind: 0 miss, 1 hit, 2 kill */
 static Mark marks[512];
 static int tlen;
-
-/* ---------- small helpers ---------- */
-static uint64_t rs = 88172645463325252ULL;
-static uint32_t rnd32(void) {
-    rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17;
-    return (uint32_t)(rs >> 11);
-}
-static float rndf(void) { return (rnd32() & 0xFFFFFF) / 16777216.0f; }
-static int imin(int a, int b) { return a < b ? a : b; }
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-static double now(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-}
-
-/* ---------- output buffer ---------- */
-static void ob_put(const char *s, size_t n) {
-    if (obn + n > obc) {
-        obc = (obn + n) * 2 + 4096;
-        ob = realloc(ob, obc);
-        if (!ob) _exit(1);
-    }
-    memcpy(ob + obn, s, n);
-    obn += n;
-}
-#define OBF(...) do { char t_[96]; int n_ = snprintf(t_, sizeof t_, __VA_ARGS__); ob_put(t_, (size_t)n_); } while (0)
-
-static void ob_utf8(uint32_t c) {
-    char t[4]; int n;
-    if (c < 0x80)       { t[0] = (char)c; n = 1; }
-    else if (c < 0x800) { t[0] = (char)(0xC0 | (c >> 6)); t[1] = (char)(0x80 | (c & 63)); n = 2; }
-    else                { t[0] = (char)(0xE0 | (c >> 12)); t[1] = (char)(0x80 | ((c >> 6) & 63)); t[2] = (char)(0x80 | (c & 63)); n = 3; }
-    ob_put(t, (size_t)n);
-}
-
-static void flush_ob(void) {
-    size_t off = 0;
-    while (off < obn) {
-        ssize_t n = write(1, ob + off, obn - off);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN) { poll(NULL, 0, 1); continue; }
-            break;
-        }
-        off += (size_t)n;
-    }
-    obn = 0;
-}
-
-static void write_str(const char *s) {
-    ssize_t r = write(1, s, strlen(s));
-    (void)r;
-}
-
-/* ---------- terminal setup ---------- */
-static void restore(void) {
-    if (raw_on) {
-        write_str("\x1b[0m\x1b[?25h\x1b[?7h\x1b[?2026l\x1b[?1049l");
-        tcsetattr(0, TCSAFLUSH, &orig);
-        raw_on = 0;
-    }
-}
-static void on_sig(int s) { (void)s; quit_flag = 1; }
-
-/* ---------- utf-8 ---------- */
-static uint32_t u8next(const char **p) {
-    const unsigned char *s = (const unsigned char *)*p;
-    uint32_t c = s[0];
-    int n = 1;
-    if (c < 0x80) n = 1;
-    else if ((c >> 5) == 6)  { c &= 0x1f; n = 2; }
-    else if ((c >> 4) == 14) { c &= 0x0f; n = 3; }
-    else c = 0xFFFD;
-    for (int i = 1; i < n; i++) c = (c << 6) | (s[i] & 0x3f);
-    *p += n;
-    return c;
-}
-static int ulen(const char *s) { int n = 0; while (*s) { u8next(&s); n++; } return n; }
-
-/* ---------- cell grid ---------- */
-static void clear_grid(void) {
-    for (int i = 0; i < W * H; i++) { cur[i].ch = ' '; cur[i].r = cur[i].g = cur[i].b = 0; cur[i].bold = cur[i].inv = 0; }
-}
-static void put(int x, int y, uint32_t ch, int r, int g, int b, int bold, int inv) {
-    if (x < 0 || y < 0 || x >= W || y >= H) return;
-    Cell *c = &cur[y * W + x];
-    c->ch = ch; c->r = (uint8_t)r; c->g = (uint8_t)g; c->b = (uint8_t)b;
-    c->bold = (uint8_t)bold; c->inv = (uint8_t)inv;
-}
-static int str_at(int x, int y, const char *s, int r, int g, int b, int bold, int inv) {
-    while (*s) put(x++, y, u8next(&s), r, g, b, bold, inv);
-    return x;
-}
-static void center(int y, const char *s, int r, int g, int b, int bold) {
-    str_at((W - ulen(s)) / 2, y, s, r, g, b, bold, 0);
-}
-
-static void resize(int w, int h) {
-    W = w; H = h;
-    free(cur); free(prev);
-    cur = calloc((size_t)W * H, sizeof(Cell));
-    prev = calloc((size_t)W * H, sizeof(Cell));
-    if (!cur || !prev) _exit(1);
-    for (int i = 0; i < W * H; i++) prev[i].ch = 0xFFFFFFFFu;
-    need_clear = 1;
-}
-
-static int cell_eq(const Cell *a, const Cell *b) {
-    return a->ch == b->ch && a->r == b->r && a->g == b->g && a->b == b->b &&
-           a->bold == b->bold && a->inv == b->inv;
-}
-
-/* diff the grid against what's on screen and emit only the changes */
-static void present(void) {
-    if (need_clear) { ob_put("\x1b[2J", 4); need_clear = 0; }
-    size_t start = obn;
-    ob_put("\x1b[?2026h", 8);
-    size_t after_hdr = obn;
-    int cx = -1, cy = -1, sr = -1, sg = -1, sb = -1, sbold = -1, sinv = -1;
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            Cell *c = &cur[y * W + x], *p = &prev[y * W + x];
-            if (cell_eq(c, p)) continue;
-            *p = *c;
-            if (cx != x || cy != y) OBF("\x1b[%d;%dH", y + 1, x + 1);
-            int blank = (c->ch == ' ' || c->ch == 0) && !c->inv;
-            if (blank) {
-                if (sinv == 1) { ob_put("\x1b[0m", 4); sinv = 0; sbold = 0; sr = sg = sb = -1; }
-            } else if (c->r != sr || c->g != sg || c->b != sb || c->bold != sbold || c->inv != sinv) {
-                OBF("\x1b[0%s%s;38;2;%d;%d;%dm", c->bold ? ";1" : "", c->inv ? ";7" : "", c->r, c->g, c->b);
-                sr = c->r; sg = c->g; sb = c->b; sbold = c->bold; sinv = c->inv;
-            }
-            ob_utf8(c->ch ? c->ch : ' ');
-            cx = x + 1; cy = y;
-        }
-    }
-    if (obn == after_hdr) { obn = start; return; }   /* nothing changed */
-    ob_put("\x1b[?2026l", 8);
-    flush_ob();
-}
 
 /* ---------- game ---------- */
 static void hp_color(int hp, int *r, int *g, int *b) {
@@ -227,7 +67,12 @@ static void new_game(void) {
     spawn_t = 0.4f; miss_t = 0; over_t = 0; elapsed = 0;
 }
 
+static int count_alive(void)     { int n = 0; for (int i = 0; i < MAXD; i++) n += drops[i].alive != 0; return n; }
+static int count_live_beams(void) { int n = 0; for (int i = 0; i < MAXB; i++) n += beams[i].ttl > 0; return n; }
+static int count_live_fx(void)   { int n = 0; for (int i = 0; i < MAXFX; i++) n += fxs[i].ttl > 0; return n; }
+
 static void spawn(void) {
+    const int W = canvas_w(), H = canvas_h();
     int slot = -1;
     for (int i = 0; i < MAXD; i++) if (!drops[i].alive) { slot = i; break; }
     if (slot < 0) return;
@@ -268,7 +113,8 @@ static void add_beam(int x0, int y0, int x1, int y1) {
 }
 
 static void shoot(char c) {
-    if (tlen >= W - 6 || tlen >= (int)(sizeof marks / sizeof marks[0]) - 2) tlen = 0;
+    const int H = canvas_h();
+    if (tlen >= canvas_w() - 6 || tlen >= (int)(sizeof marks / sizeof marks[0]) - 2) tlen = 0;
     Mark *mk = &marks[tlen++];
     *mk = (Mark){ 0, 255, 70, 70, 0 };                 /* default: miss */
     shots++;
@@ -311,9 +157,8 @@ static void shoot(char c) {
     }
 }
 
-static int too_small(void) { return W < MIN_W || H < MIN_H; }
-
 static void update(float dt) {
+    const int W = canvas_w(), H = canvas_h();
     elapsed += dt;
     if (miss_t > 0) miss_t -= dt;
     for (int i = 0; i < tlen; i++) marks[i].age += dt;
@@ -372,7 +217,7 @@ static void draw_beam(const Beam *b) {
 }
 
 static void overlay_box(int w, int h) {
-    int x0 = (W - w) / 2, y0 = (H - h) / 2;
+    int x0 = (canvas_w() - w) / 2, y0 = (canvas_h() - h) / 2;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
             uint32_t ch = ' ';
@@ -387,8 +232,9 @@ static void overlay_box(int w, int h) {
 }
 
 static void render(void) {
-    clear_grid();
-    if (too_small()) {
+    const int W = canvas_w(), H = canvas_h();
+    canvas_clear();
+    if (canvas_too_small()) {
         str_at(1, 1, "terminal too small", 255, 70, 70, 1, 0);
         char b[48]; snprintf(b, sizeof b, "need %dx%d, have %dx%d", MIN_W, MIN_H, W, H);
         str_at(1, 2, b, 200, 200, 200, 0, 0);
@@ -545,7 +391,7 @@ static void read_input(void) {
  *   NEOTYPE_SEED     xorshift seed (default: time/pid mix, as in normal play)
  *   NEOTYPE_HEADLESS =1  simulate instead of starting the TUI
  *   NEOTYPE_W / NEOTYPE_H  viewport size (default 100x30)
- *   NEOTYPE_FRAMES   frames to simulate (default 1800)
+ *   NEOTYPE_FRAMES   frames to simulate (default 3600)
  * Emits a digest line every 60 frames; tests/golden.txt is the expected
  * output. See tests/run.sh.
  */
@@ -559,24 +405,6 @@ static uint64_t env_seed(void) {
     if (v && *v) return strtoull(v, NULL, 0);
     return (uint64_t)time(NULL) * 2654435761ULL ^ ((uint64_t)getpid() << 32);
 }
-
-static uint64_t grid_hash(void) {
-    uint64_t h = 1469598103934665603ULL;
-    for (int i = 0; i < W * H; i++) {
-        const Cell *c = &cur[i];
-        const unsigned char f[9] = {
-            (unsigned char)(c->ch & 0xFF), (unsigned char)((c->ch >> 8) & 0xFF),
-            (unsigned char)((c->ch >> 16) & 0xFF), (unsigned char)((c->ch >> 24) & 0xFF),
-            c->r, c->g, c->b, c->bold, c->inv
-        };
-        for (int k = 0; k < 9; k++) { h ^= f[k]; h *= 1099511628211ULL; }
-    }
-    return h;
-}
-
-static int count_alive(void)    { int n = 0; for (int i = 0; i < MAXD; i++) n += drops[i].alive != 0; return n; }
-static int count_live_beams(void) { int n = 0; for (int i = 0; i < MAXB; i++) n += beams[i].ttl > 0; return n; }
-static int count_live_fx(void)  { int n = 0; for (int i = 0; i < MAXFX; i++) n += fxs[i].ttl > 0; return n; }
 
 /* Stimulus uses its own LCG so that drift in the game's RNG shows up in the
  * digest directly, rather than being amplified through the input script. */
@@ -596,7 +424,7 @@ static void headless_run(void) {
 
     rs = env_seed();
     for (int i = 0; i < 8; i++) rnd32();
-    resize(w, h);
+    canvas_resize(w, h);
     state = S_TITLE;
 
     for (int f = 0; f < frames; f++) {
@@ -624,7 +452,7 @@ static void headless_run(void) {
                    "drops=%d beams=%d fx=%d rng=%016llx grid=%016llx\n",
                    f, state, score, kills, level, shots, hits, combo, maxcombo,
                    tlen, elapsed, count_alive(), count_live_beams(), count_live_fx(),
-                   (unsigned long long)rs, (unsigned long long)grid_hash());
+                   (unsigned long long)rs, (unsigned long long)canvas_hash());
     }
 }
 
@@ -636,29 +464,11 @@ int main(void) {
     rs = env_seed();
     for (int i = 0; i < 8; i++) rnd32();
 
-    tcgetattr(0, &orig);
-    struct termios t = orig;
-    t.c_iflag &= ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-    t.c_cflag |= CS8;
-    t.c_lflag &= ~(tcflag_t)(ECHO | ICANON | IEXTEN | ISIG);
-    t.c_cc[VMIN] = 0; t.c_cc[VTIME] = 0;
-    tcsetattr(0, TCSAFLUSH, &t);
-    raw_on = 1;
-    atexit(restore);
+    term_init();
 
-    struct sigaction sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_sig;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    write_str("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J");
-
-    struct winsize ws;
-    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) resize(ws.ws_col, ws.ws_row);
-    else resize(80, 24);
+    int w, h;
+    term_size(&w, &h);
+    canvas_resize(w, h);
 
     double last = now(), next = last;
     while (!quit_flag) {
@@ -676,11 +486,10 @@ int main(void) {
         if (dt > 0.1) dt = 0.1;
         next = t0 + FRAME;
 
-        if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0 &&
-            (ws.ws_col != W || ws.ws_row != H))
-            resize(ws.ws_col, ws.ws_row);
+        term_size(&w, &h);
+        if (w != canvas_w() || h != canvas_h()) canvas_resize(w, h);
 
-        if (!too_small()) {
+        if (!canvas_too_small()) {
             if (state == S_PLAY) update((float)dt);
             else if (state == S_OVER) over_t += (float)dt;
         }

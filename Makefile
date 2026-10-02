@@ -1,7 +1,7 @@
 # neotype - matrix-rain typing shooter for the terminal
 #
 #   make          build ./neotype
-#   make test     run the deterministic headless regression
+#   make test     deterministic headless regression + layering check
 #   make clean
 
 CC      ?= cc
@@ -26,6 +26,7 @@ src/%.o: src/%.c
 
 test: $(BIN)
 	@sh tests/run.sh
+	@sh tests/check-layers.sh
 
 clean:
 	rm -f $(BIN) $(OBJ) $(DEP)

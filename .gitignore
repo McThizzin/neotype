@@ -1,4 +1,5 @@
 neotype
 tests/audio_test
+tests/sound_test
 *.o
 *.d

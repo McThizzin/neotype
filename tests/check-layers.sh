@@ -12,7 +12,8 @@ canvas:util,term
 game:util,palette
 draw:util,canvas,game,palette
 input:util,term,game
-main:util,term,canvas,palette,game,draw,input,audio"
+sound:game,audio
+main:util,term,canvas,palette,game,draw,input,sound"
 
 fail=0
 echo "$LAYERS" | while IFS=: read -r mod allowed; do

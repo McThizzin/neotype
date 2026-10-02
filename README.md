@@ -37,7 +37,8 @@ that applies at 10 in a row.
 src/
   util.*      rng, math, clock, utf-8          no dependencies
   palette.*   colour language                  no dependencies
-  audio.*     procedural sfx and mixer         no dependencies (miniaudio, device only)
+  audio.*     procedural sfx + mixer           no dependencies (miniaudio, device only)
+  sound.*     binds game events to effects     game, audio
   term.*      output buffer, raw mode, signals  POSIX
   canvas.*    cell grid + diff renderer        term, util
   game.*      simulation and rules             util, palette
@@ -62,17 +63,16 @@ oscillator sweeps and filtered noise at startup, so there are no sample files
 and the game stays a single binary. Tweak the recipes at the top of
 `src/audio.c`.
 
-`audio` knows nothing about the game: `main` reads the simulation's counters
-and turns the per-frame deltas into sounds, which keeps the dependency
-one-way and means the rules never learn sound exists. Requests cross to the
-audio thread through a lock-free ring, so the game never blocks on a full
-queue — sounds are dropped rather than queued.
+`audio` knows nothing about the game. `sound` is the one place that bridges
+them: it reads the simulation's counters and turns the per-frame deltas into
+effects. That keeps the dependency one-way and means the rules never learn
+sound exists. Requests cross to the audio thread through a lock-free ring, so
+the game never blocks on a full queue — sounds are dropped rather than queued.
 
-There is no mute key yet. `audio_set_muted()` / `audio_is_muted()` exist in
-`src/audio.h` but nothing is bound to them; every letter is already a fire key
-during play, so a binding needs a non-letter key. If no output device is
-available (SSH, container, no sound card) the game prints a note and plays
-silently.
+There is no mute key yet. `sound_set_enabled()` is the switch a mute key would
+flip; `audio_set_muted()` / `audio_is_muted()` are the level below it. If no
+output device is available (SSH, container, no sound card) `sound_open()`
+reports it, the game prints a note, and everything runs silently.
 
 ## Tests
 
@@ -80,7 +80,7 @@ silently.
 make test
 ```
 
-Three checks:
+Four checks:
 
 **Deterministic regression.** The binary can simulate itself with no tty and no
 wall clock:
@@ -111,6 +111,19 @@ everything. To also write one `.wav` per effect so you can listen to them:
 ```
 make test-audio OUT=/tmp/snd
 ```
+
+**Sound-mapping check.** `tests/sound_test.c` drives the real simulation into
+the real mapping and records which effect fired, by supplying `audio_play()`
+itself. Nothing links `audio.o`, so it needs neither a sound card nor
+miniaudio. It pins the counts — one kill sound per kill, one hit sound per
+non-kill hit, one miss sound per miss, one game over per crash, one level up
+per level change — plus the quiet cases that are easy to regress: nothing
+before the run starts, nothing while retrying, the per-frame cap at 4, and
+`audio_init` reporting no device leaving the mapping inert.
+
+The first of those exists because it caught a real bug: the baseline was
+zero-initialised while the game starts at level 1, so every run played the
+level-up arpeggio on the title screen.
 
 ## Environment variables
 

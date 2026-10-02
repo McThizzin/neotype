@@ -26,8 +26,9 @@ DEP := $(OBJ:.o=.d)
 
 BIN   := neotype
 ATEST := tests/audio_test
+STEST := tests/sound_test
 
-.PHONY: all test test-audio clean
+.PHONY: all test test-audio test-sound clean
 all: $(BIN)
 
 $(BIN): $(OBJ)
@@ -41,16 +42,25 @@ src/%.o: src/%.c
 $(ATEST): tests/audio_test.c src/audio.o src/util.o
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-test: $(BIN) $(ATEST)
+# No audio.o on the link line: the test supplies audio_play() itself to record
+# what fired, so this needs neither a sound card nor miniaudio.
+$(STEST): tests/sound_test.c src/sound.o src/game.o src/palette.o src/util.o
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+test: $(BIN) $(ATEST) $(STEST)
 	@sh tests/run.sh
 	@sh tests/check-layers.sh
 	@$(ATEST)
+	@$(STEST)
 
 test-audio: $(ATEST)
 	@if [ -n "$(OUT)" ]; then mkdir -p "$(OUT)"; fi
 	@$(ATEST) $(OUT)
 
+test-sound: $(STEST)
+	@$(STEST)
+
 clean:
-	rm -f $(BIN) $(OBJ) $(DEP) $(ATEST)
+	rm -f $(BIN) $(OBJ) $(DEP) $(ATEST) $(STEST)
 
 -include $(DEP)

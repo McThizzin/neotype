@@ -540,11 +540,100 @@ static void read_input(void) {
     }
 }
 
+/* ---------- headless test harness ----------
+ * Env-driven so the regression test needs no tty and no wall clock:
+ *   NEOTYPE_SEED     xorshift seed (default: time/pid mix, as in normal play)
+ *   NEOTYPE_HEADLESS =1  simulate instead of starting the TUI
+ *   NEOTYPE_W / NEOTYPE_H  viewport size (default 100x30)
+ *   NEOTYPE_FRAMES   frames to simulate (default 1800)
+ * Emits a digest line every 60 frames; tests/golden.txt is the expected
+ * output. See tests/run.sh.
+ */
+static int env_int(const char *k, int dflt) {
+    const char *v = getenv(k);
+    return v && *v ? atoi(v) : dflt;
+}
+
+static uint64_t env_seed(void) {
+    const char *v = getenv("NEOTYPE_SEED");
+    if (v && *v) return strtoull(v, NULL, 0);
+    return (uint64_t)time(NULL) * 2654435761ULL ^ ((uint64_t)getpid() << 32);
+}
+
+static uint64_t grid_hash(void) {
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < W * H; i++) {
+        const Cell *c = &cur[i];
+        const unsigned char f[9] = {
+            (unsigned char)(c->ch & 0xFF), (unsigned char)((c->ch >> 8) & 0xFF),
+            (unsigned char)((c->ch >> 16) & 0xFF), (unsigned char)((c->ch >> 24) & 0xFF),
+            c->r, c->g, c->b, c->bold, c->inv
+        };
+        for (int k = 0; k < 9; k++) { h ^= f[k]; h *= 1099511628211ULL; }
+    }
+    return h;
+}
+
+static int count_alive(void)    { int n = 0; for (int i = 0; i < MAXD; i++) n += drops[i].alive != 0; return n; }
+static int count_live_beams(void) { int n = 0; for (int i = 0; i < MAXB; i++) n += beams[i].ttl > 0; return n; }
+static int count_live_fx(void)  { int n = 0; for (int i = 0; i < MAXFX; i++) n += fxs[i].ttl > 0; return n; }
+
+/* Stimulus uses its own LCG so that drift in the game's RNG shows up in the
+ * digest directly, rather than being amplified through the input script. */
+static uint64_t ks = 0x1234567890abcdefULL;
+static char next_key(void) {
+    static const char alpha[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    ks ^= ks << 13; ks ^= ks >> 7; ks ^= ks << 17;
+    return alpha[(ks >> 11) % (sizeof alpha - 1)];
+}
+
+static void headless_run(void) {
+    int frames = env_int("NEOTYPE_FRAMES", 3600);
+    int w = env_int("NEOTYPE_W", 100), h = env_int("NEOTYPE_H", 30);
+    int retried = 0;
+    if (w < MIN_W) w = MIN_W;
+    if (h < MIN_H) h = MIN_H;
+
+    rs = env_seed();
+    for (int i = 0; i < 8; i++) rnd32();
+    resize(w, h);
+    state = S_TITLE;
+
+    for (int f = 0; f < frames; f++) {
+        /* Fixed stimulus: start, a key every other frame, and a few one-off
+         * control keys so the pause / clear / backspace paths get covered. */
+        if      (f == 1)   on_key('\r');
+        else if (f == 300) on_key('\t');
+        else if (f == 360) on_key('\t');
+        else if (f == 500) on_key('\r');
+        else if (f == 520) on_key(127);
+
+        if (f > 1 && !(f & 1)) on_key(next_key());
+
+        /* Once the crash overlay has settled, retry once, so new_game() and the
+         * S_OVER -> S_PLAY transition are covered as well. */
+        if (!retried && state == S_OVER && over_t >= 1.0f) { on_key('\r'); retried = 1; }
+
+        if (state == S_PLAY) update((float)FRAME);
+        else if (state == S_OVER) over_t += (float)FRAME;
+        render();
+
+        if (f % 60 == 0 || f == frames - 1)
+            printf("f=%04d state=%d score=%d kills=%d level=%d shots=%d hits=%d "
+                   "combo=%d maxcombo=%d tlen=%d elapsed=%.3f "
+                   "drops=%d beams=%d fx=%d rng=%016llx grid=%016llx\n",
+                   f, state, score, kills, level, shots, hits, combo, maxcombo,
+                   tlen, elapsed, count_alive(), count_live_beams(), count_live_fx(),
+                   (unsigned long long)rs, (unsigned long long)grid_hash());
+    }
+}
+
 /* ---------- main ---------- */
 int main(void) {
+    if (getenv("NEOTYPE_HEADLESS")) { headless_run(); return 0; }
     if (!isatty(0) || !isatty(1)) { fputs("neotype needs an interactive terminal\n", stderr); return 1; }
 
-    rs ^= (uint64_t)time(NULL) * 2654435761ULL ^ ((uint64_t)getpid() << 32);
+    rs = env_seed();
     for (int i = 0; i < 8; i++) rnd32();
 
     tcgetattr(0, &orig);
